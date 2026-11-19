@@ -383,3 +383,4 @@ W etapie 3A nie zmieniano tabel, migracji ani uprawnień. Rzeczywisty odczyt z a
 Projekt zainicjalizowano na Next.js 16.2.12 i React 19.2.4 dostępnych w lokalnym cache npm. Dostęp terminala do rejestru npm był niedostępny (błąd DNS), więc nie udało się pobrać najnowszych stabilnych wersji. Dokładne zainstalowane wersje zapisuje `package-lock.json`.
 
 W etapie 1B dodano wyłącznie `@supabase/supabase-js` 2.110.9 i `@supabase/ssr` 0.10.3 oraz ich zależności pośrednie. Biblioteki zainstalowano z lokalnego cache npm z powodu tego samego ograniczenia dostępu do sieci.
+# Cherry-CRM
