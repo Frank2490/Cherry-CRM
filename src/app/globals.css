@@ -1,0 +1,21 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+}
+
+/* Zamknięty dialog nie może tworzyć widocznej ani klikalnej warstwy. */
+dialog:not([open]) {
+  display: none;
+}
+
+body {
+  background: #f8f9fb;
+  color: #18181b;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+
+::selection {
+  background: #eedfe4;
+  color: #542b39;
+}
