@@ -1,4 +1,4 @@
--- Etap 2B: test RLS z JEDNYM istniejącym kontem Supabase Auth.
+-- Test RLS z JEDNYM istniejącym kontem Supabase Auth, po wszystkich migracjach.
 -- W pierwszym set_config wpisz UUID swojego konta A zamiast pustego tekstu.
 -- B to wygenerowany UUID NIEISTNIEJĄCY w auth.users, bez tworzenia konta.
 -- Nie tworzymy leada B. Symulacja claims nie jest testem logowania/JWT B.
@@ -8,6 +8,8 @@
 begin;
 select set_config('crm_test.user_a', 'f3a6640b-1da4-49cc-bee9-aaffcaea295e', true); -- TUTAJ WPISZ UUID KONTA A.
 select set_config('crm_test.lead_a', gen_random_uuid()::text, true);
+select set_config('crm_test.won_lead', gen_random_uuid()::text, true);
+select set_config('crm_test.lost_lead', gen_random_uuid()::text, true);
 
 do $setup$
 declare
@@ -69,6 +71,8 @@ declare
   affected bigint;
   test_case record;
   observed_state text;
+  closed_status text;
+  closed_id uuid;
 begin
   if current_user <> 'authenticated' or auth.uid() is distinct from a then
     raise exception 'FAIL A: niewłaściwa rola lub UID; test nie może działać jako administrator.';
@@ -102,6 +106,18 @@ begin
     raise exception 'FAIL A: trigger kontaktu nie działa jako authenticated.';
   end if;
 
+  delete from public.leads where id = test_lead_id;
+  get diagnostics affected = row_count;
+  if affected <> 0 then raise exception 'FAIL A: usunięto aktywnego leada.'; end if;
+
+  foreach closed_status in array array['won', 'lost'] loop
+    closed_id := current_setting('crm_test.' || closed_status || '_lead')::uuid;
+    insert into public.leads(id, company_name, phone, status)
+    values (closed_id, '__crm_rls_closed_test__', '__test__', closed_status);
+    insert into public.lead_activities(lead_id, type, content)
+    values (closed_id, 'note', '__cascade_test__');
+  end loop;
+
   -- Pełny obraz danych, bez ograniczania porównania do liczby zdarzeń.
   perform set_config('crm_test.lead_snapshot', (
     select to_jsonb(l)::text from public.leads l where l.id = test_lead_id
@@ -114,7 +130,6 @@ begin
   for test_case in select * from (values
     -- 23503 (brak B w auth.users) NIE jest dowodem działania WITH CHECK.
     ('zmiana właściciela', format('update public.leads set user_id = %L where id = %L', b, test_lead_id)),
-    ('DELETE leads', format('delete from public.leads where id = %L', test_lead_id)),
     ('UPDATE historii', format($$update public.lead_activities set content = '__forbidden_A__' where lead_id = %L$$, test_lead_id)),
     ('DELETE historii', format('delete from public.lead_activities where lead_id = %L', test_lead_id))
   ) as cases(label, statement) loop
@@ -131,6 +146,15 @@ begin
   end loop;
 end;
 $owner_a$;
+
+-- Supabase Auth może nadać rolę authenticated również sesji anonimowej.
+select set_config('request.jwt.claims', jsonb_build_object('sub', current_setting('crm_test.user_a'), 'role', 'authenticated', 'is_anonymous', true)::text, true);
+do $anonymous_auth$
+begin
+  delete from public.leads where id = current_setting('crm_test.won_lead')::uuid;
+  if found then raise exception 'FAIL: sesja anonimowa Supabase Auth usunęła leada.'; end if;
+end;
+$anonymous_auth$;
 
 -- B: tylko symulowany sub. Bez INSERT do auth.users ani leada z user_id B.
 select set_config('request.jwt.claim.sub', current_setting('crm_test.user_b'), true);
@@ -160,6 +184,9 @@ begin
   update public.leads set user_id = b where id = test_lead_id;
   get diagnostics affected = row_count;
   if affected <> 0 then raise exception 'FAIL B: przejęto leada A.'; end if;
+
+  delete from public.leads where id = current_setting('crm_test.won_lead')::uuid;
+  if found then raise exception 'FAIL B: usunięto zakończonego leada A.'; end if;
 
   foreach activity_type in array array['note', 'contact', 'status_change'] loop
     observed_state := null;
@@ -197,7 +224,7 @@ begin
     ('SELECT historii', format('select * from public.lead_activities where lead_id = %L', test_lead_id)),
     ('INSERT leads', format($$insert into public.leads(user_id, company_name, phone, follow_up_date) values (%L, '__test__', '__test__', current_date)$$, a)),
     ('UPDATE leads', format($$update public.leads set next_step = '__forbidden_anon__' where id = %L$$, test_lead_id)),
-    ('DELETE leads', format('delete from public.leads where id = %L', test_lead_id)),
+    ('DELETE leads', format('delete from public.leads where id = %L', current_setting('crm_test.won_lead')::uuid)),
     ('INSERT historii', format($$insert into public.lead_activities(lead_id, type, content) values (%L, 'note', '__forbidden_anon__')$$, test_lead_id)),
     ('UPDATE historii', format($$update public.lead_activities set content = '__forbidden_anon__' where lead_id = %L$$, test_lead_id)),
     ('DELETE historii', format('delete from public.lead_activities where lead_id = %L', test_lead_id))
@@ -226,6 +253,8 @@ declare
   test_lead_id uuid := current_setting('crm_test.lead_a')::uuid;
   actual_lead jsonb;
   actual_activities jsonb;
+  closed_status text;
+  closed_id uuid;
 begin
   if current_user <> 'authenticated'
     or auth.uid() is distinct from current_setting('crm_test.user_a')::uuid then
@@ -241,8 +270,25 @@ begin
   if actual_activities is distinct from current_setting('crm_test.activities_snapshot')::jsonb then
     raise exception 'FAIL: historia A zmieniła się lub zniknęła po zabronionych operacjach.';
   end if;
+
+  foreach closed_status in array array['won', 'lost'] loop
+    closed_id := current_setting('crm_test.' || closed_status || '_lead')::uuid;
+    delete from public.leads where id = closed_id;
+    if not found then raise exception 'FAIL A: nie usunięto własnego leada %.', closed_status; end if;
+  end loop;
 end;
 $unchanged$;
+
+-- Sprawdzenie fizycznego usunięcia historii. RLS użytkownika ukryłoby osierocone wpisy.
+reset role;
+do $cascade$
+begin
+  if exists (
+    select 1 from public.lead_activities
+    where lead_id in (current_setting('crm_test.won_lead')::uuid, current_setting('crm_test.lost_lead')::uuid)
+  ) then raise exception 'FAIL: aktywności pozostały po usunięciu leada.'; end if;
+end;
+$cascade$;
 
 -- Celowo PRZED ROLLBACK: błąd asercji blokuje ten SELECT w przerwanej transakcji.
 -- PASS po ROLLBACK mógłby zostać wykonany mimo wcześniejszego błędu testu.

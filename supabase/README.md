@@ -1,4 +1,17 @@
-# Baza danych CRM — etapy 2B, 3B, 4C i 8B.3
+# Baza danych CRM — etapy 2B, 3B, 4C, 8B.3 i 8D.0
+
+## Etap 8D.0 — usuwanie zakończonych leadów
+
+Migracja `migrations/20261119000200_allow_closed_lead_deletion.sql` dodaje
+uprawnienie `DELETE` i politykę RLS dla własnych leadów `won` i `lost`.
+Nie wykonuje operacji na danych. Zastosuj ją w wybranym środowisku przed
+użyciem przycisku „Usuń leada”. Przy powiązanym Supabase CLI sprawdź plan
+przez `npx supabase db push --dry-run`, a po sprawdzeniu wykonaj `npx supabase db push`.
+
+Na bazie testowej po migracji uruchom `tests/rls_single_user.sql` z UUID
+istniejącego konta w `crm_test.user_a`. Skrypt sprawdza usuwanie obu
+zamkniętych statusów, odmowę dla aktywnego leada, cudzego rekordu i sesji
+anonimowej oraz usunięcie powiązanych aktywności. Kończy się `ROLLBACK`.
 
 ## Etap 8B.3 — ochrona przed duplikowaniem leadów
 
@@ -59,7 +72,7 @@ Nie przeprowadzaj tych prób na danych produkcyjnych.
 
 ## Stan wykonania
 
-Migracja `migrations/20261116000100_create_leads_and_activities.sql` została wykonana w Supabase. Użytkownik potwierdził poprawne wykonanie pierwotnego testu struktury i RLS z jednym istniejącym kontem. Historyczna migracja oraz oba skrypty RLS pozostają bez zmian.
+Migracja `migrations/20261116000100_create_leads_and_activities.sql` została wykonana w Supabase. Użytkownik potwierdził poprawne wykonanie pierwotnego testu struktury i RLS z jednym istniejącym kontem. Oba skrypty RLS zaktualizowano w etapie 8D.0.
 
 Etap 3B dodał migrację `migrations/20261117000100_optional_active_follow_up.sql` i aktualizuje `tests/structure.sql`. Nowy SQL zmienia tylko CHECK `leads_follow_up_matches_status`: aktywny lead może nie mieć daty, a `won`/`lost` nadal wymagają NULL. Nie zmienia danych, tabel, pozostałych ograniczeń, grantów ani polityk. Formularz bez daty wymaga zastosowania tej migracji.
 
@@ -77,6 +90,7 @@ Aktywny katalog `supabase/migrations/` zawiera teraz:
 - `20261117000100_optional_active_follow_up.sql` — historyczna migracja 3B, bez zmian.
 - `20261118000100_add_lead_notes.sql` — nowa migracja 4C, niewykonana przez agenta.
 - `20261119000100_add_lead_creation_request_id.sql` — migracja 8B.3, niewykonana przez agenta.
+- `20261119000200_allow_closed_lead_deletion.sql` — migracja 8D.0, niewykonana przez agenta.
 
 Przy działającym powiązaniu CLI:
 
@@ -165,10 +179,10 @@ PK automatycznie tworzą własne indeksy. Nie dodano redundantnego indeksu tylko
 
 Obie tabele mają włączone RLS. Granty tabel dla `PUBLIC`, `anon` i `authenticated` są najpierw cofane, także te pochodzące z domyślnych uprawnień Supabase. Następnie `authenticated` otrzymuje wyłącznie:
 
-- `leads`: SELECT, INSERT, UPDATE. SELECT/UPDATE mają `USING ((SELECT auth.uid()) = user_id)`; INSERT/UPDATE mają taki sam `WITH CHECK`. Nie da się zapisać cudzego właściciela ani przenieść własnego leada na inne konto. Brak grantu i polityki DELETE.
+- `leads`: SELECT, INSERT i UPDATE tylko własnych rekordów. `USING` i `WITH CHECK` porównują `auth.uid()` z `user_id`. Po migracji 8D.0 uprawnienie DELETE jest ograniczone przez RLS do własnych rekordów `won` lub `lost` w sesji nieanonimowej.
 - `lead_activities`: SELECT i INSERT. Polityki sprawdzają przez `EXISTS` własność powiązanego leada. Brak grantów i polityk UPDATE/DELETE.
 
-Anonimowy dostęp nie ma ani grantów tabel, ani polityk. Usunięcie leada przez uprawnionego administratora usuwa powiązaną historię przez FK; nie daje to użytkownikowi uprawnienia DELETE. Nie użyto funkcji omijających RLS ani kluczy uprzywilejowanych w aplikacji.
+Rola `anon` nie otrzymuje grantów ani polityk dla tych tabel. Po usunięciu leada klucz obcy usuwa jego aktywności przez `ON DELETE CASCADE`.
 
 Wzorzec polityk i rozdzielenie grantów od RLS opisuje [dokumentacja Supabase](https://supabase.com/docs/guides/database/postgres/row-level-security).
 
@@ -225,7 +239,7 @@ Wynik ma dopuszczać dowolną datę lub NULL dla aktywnych statusów, ale tylko 
 
 ## Kontrola w Supabase Dashboard
 
-W **Table Editor**, w schemacie **public**, odśwież listę i otwórz `leads` oraz `lead_activities`. Sprawdź kolumny, typy, defaults, relacje FK i oznaczenie włączonego RLS. W **Authentication → Policies** / widoku **Policies** tabel sprawdź trzy polityki `leads` i dwie `lead_activities`. Nazwa sekcji może zależeć od wersji Dashboardu; SQL poniżej daje dokładną kontrolę niezależnie od UI:
+W **Table Editor**, w schemacie **public**, odśwież listę i otwórz `leads` oraz `lead_activities`. Sprawdź kolumny, typy, defaults, relacje FK i oznaczenie włączonego RLS. W **Authentication → Policies** / widoku **Policies** tabel sprawdź cztery polityki `leads` po migracji 8D.0 i dwie `lead_activities`. Jeśli nazwa sekcji różni się w Twoim Dashboardzie, użyj zapytań poniżej.
 
 ```sql
 select c.relname, c.relrowsecurity

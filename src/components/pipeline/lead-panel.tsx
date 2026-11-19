@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { useRouter } from "next/navigation";
-import { getLeadDetails, updateLead } from "@/app/actions/leads";
+import { deleteLead, getLeadDetails, updateLead } from "@/app/actions/leads";
 import { FollowUpCalendar } from "@/components/pipeline/follow-up-calendar";
 import { SectionIcon } from "@/components/section-icon";
 import { isDialogBackdropClick, useUnsavedChanges } from "@/lib/navigation/use-unsaved-changes";
@@ -83,6 +83,8 @@ type LeadPanelProps = {
 export function LeadPanel({ leadId, companyName, onClose, preferRevalidation = false }: LeadPanelProps) {
   const router = useRouter();
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const deleteDialogRef = useRef<HTMLDialogElement>(null);
+  const deleteTriggerRef = useRef<HTMLButtonElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const calendarTriggerRef = useRef<HTMLButtonElement>(null);
   const errorRef = useRef<HTMLParagraphElement>(null);
@@ -98,9 +100,13 @@ export function LeadPanel({ leadId, companyName, onClose, preferRevalidation = f
   const [success, setSuccess] = useState("");
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [pending, startTransition] = useTransition();
+  const [deleting, startDelete] = useTransition();
+  const [deleteError, setDeleteError] = useState("");
+  const busy = pending || deleting;
   const dirty = Boolean(lead && values && hasLeadChanges(values, lead));
-  const confirmDiscard = useUnsavedChanges(dirty, pending);
+  const confirmDiscard = useUnsavedChanges(dirty, busy);
   const closed = values ? isClosedLeadStatus(values.status) : false;
+  const canDelete = lead !== null && isClosedLeadStatus(lead.status);
   const status = LEAD_STATUSES.find((entry) => entry.value === values?.status);
 
   useEffect(() => {
@@ -226,6 +232,46 @@ export function LeadPanel({ leadId, companyName, onClose, preferRevalidation = f
     });
   }
 
+  function requestDelete() {
+    if (saving.current || !canDelete) return;
+    setDeleteError("");
+    deleteDialogRef.current?.showModal();
+  }
+
+  function cancelDelete() {
+    if (saving.current) return;
+    deleteDialogRef.current?.close();
+    deleteTriggerRef.current?.focus();
+  }
+
+  function confirmDelete() {
+    if (saving.current || !lead || !canDelete || !deleteDialogRef.current?.open)
+      return;
+    saving.current = true;
+    setDeleteError("");
+    startDelete(async () => {
+      let result: Awaited<ReturnType<typeof deleteLead>>;
+      try {
+        result = await deleteLead(leadId, lead.updated_at);
+      } catch {
+        result = {
+          ok: false,
+          message:
+            "Nie udało się potwierdzić usunięcia leada. Sprawdź połączenie i spróbuj ponownie.",
+        };
+      } finally {
+        saving.current = false;
+      }
+      if (!result.ok) {
+        setDeleteError(result.message);
+        return;
+      }
+      deleteDialogRef.current?.close();
+      onClose();
+      if (!result.revalidated) router.refresh();
+    });
+  }
+
   return (
     <dialog
       ref={dialogRef}
@@ -268,7 +314,7 @@ export function LeadPanel({ leadId, companyName, onClose, preferRevalidation = f
           ref={closeRef}
           type="button"
           onClick={requestClose}
-          disabled={pending}
+          disabled={busy}
           aria-label="Zamknij panel leada"
           className="-mr-2 -mt-1 flex size-11 shrink-0 items-center justify-center rounded-lg text-2xl text-zinc-500 hover:bg-zinc-100 focus-visible:outline-2 focus-visible:outline-rose-900 disabled:opacity-40"
         >
@@ -303,7 +349,7 @@ export function LeadPanel({ leadId, companyName, onClose, preferRevalidation = f
       ) : (
         <div className="flex min-h-0 flex-1 flex-col">
           <fieldset
-            disabled={pending}
+            disabled={busy}
             className="flex min-h-0 min-w-0 flex-1 flex-col"
           >
             <div className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain p-5 sm:p-6">
@@ -668,8 +714,73 @@ export function LeadPanel({ leadId, companyName, onClose, preferRevalidation = f
                     : "Zapisz zmiany"}
               </button>
             </footer>
+            {canDelete && (
+              <div className="shrink-0 px-4 pb-3 sm:px-6">
+                <button
+                  ref={deleteTriggerRef}
+                  type="button"
+                  aria-haspopup="dialog"
+                  onClick={requestDelete}
+                  className="min-h-11 rounded-md px-2 text-sm font-medium text-red-800 hover:bg-red-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-800 disabled:opacity-50"
+                >
+                  Usuń leada
+                </button>
+              </div>
+            )}
           </fieldset>
         </div>
+      )}
+      {canDelete && (
+        <dialog
+          ref={deleteDialogRef}
+          aria-labelledby="lead-delete-title"
+          aria-describedby="lead-delete-description"
+          aria-busy={deleting}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") event.stopPropagation();
+          }}
+          onCancel={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            cancelDelete();
+          }}
+          className="fixed inset-0 m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-sm overflow-y-auto rounded-xl border border-zinc-200 bg-white p-5 text-zinc-900 shadow-xl backdrop:bg-zinc-950/30 sm:p-6"
+        >
+          <h2 id="lead-delete-title" className="text-lg font-semibold">
+            Usuń leada
+          </h2>
+          <p id="lead-delete-description" className="mt-2 text-sm leading-6 [overflow-wrap:anywhere]">
+            Lead <strong>{lead.company_name}</strong> i jego aktywności zostaną trwale usunięte. Tej operacji nie można cofnąć.
+          </p>
+          {deleteError && (
+            <p role="alert" className="mt-3 text-sm leading-6 text-red-800">
+              {deleteError}
+            </p>
+          )}
+          <div
+            className="mx-auto mt-5 grid w-full gap-2"
+            style={{ maxWidth: "16rem", gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}
+          >
+            <button
+              type="button"
+              autoFocus
+              disabled={deleting}
+              onClick={cancelDelete}
+              className={`${optionClass} min-w-0 break-words text-center`}
+            >
+              Anuluj
+            </button>
+            <button
+              type="button"
+              disabled={deleting}
+              onClick={confirmDelete}
+              style={{ backgroundColor: "#991b1b" }}
+              className="min-h-10 min-w-0 break-words rounded-lg px-3 py-2 text-center text-sm font-semibold text-white hover:brightness-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-900 disabled:opacity-50"
+            >
+              {deleting ? "Usuwanie…" : "Usuń na stałe"}
+            </button>
+          </div>
+        </dialog>
       )}
     </dialog>
   );

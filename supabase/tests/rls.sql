@@ -1,4 +1,4 @@
--- Po migracji. Potrzebne są DWA JUŻ ISTNIEJĄCE, różne konta.
+-- Po wszystkich migracjach. Potrzebne są DWA JUŻ ISTNIEJĄCE, różne konta.
 -- Nie twórz kont tylko po to, aby uruchomić ten plik bez osobnej zgody.
 -- Uruchom CAŁOŚĆ jako administrator mogący wykonać SET ROLE.
 -- Kontrole danych wykonujemy jako authenticated/anon, nigdy jako administrator.
@@ -72,10 +72,12 @@ begin
     raise exception 'Trigger kontaktu nie działa z uprawnieniami authenticated.';
   end if;
 
+  delete from public.leads where id = test_lead_id;
+  if found then raise exception 'A usunął własnego aktywnego leada.'; end if;
+
   for test_case in select * from (values
     ('przepisanie właściciela', format('update public.leads set user_id = %L where id = %L', b, test_lead_id)),
     ('insert z cudzym właścicielem', format($$insert into public.leads(user_id, company_name, phone, follow_up_date) values (%L, '__test__', '__test__', current_date)$$, b)),
-    ('DELETE leads', format('delete from public.leads where id = %L', test_lead_id)),
     ('UPDATE activities', format($$update public.lead_activities set content = '__forbidden__' where lead_id = %L$$, test_lead_id)),
     ('DELETE activities', format('delete from public.lead_activities where lead_id = %L', test_lead_id))
   ) as cases(label, statement) loop
@@ -87,7 +89,7 @@ begin
       raise exception 'FAIL %: oczekiwano 42501, otrzymano %', test_case.label, observed_state;
     end if;
   end loop;
-  raise notice 'PASS A: własne leady i historia dostępne; zmiana właściciela, DELETE oraz edycja historii zabronione.';
+  raise notice 'PASS A: własne leady i historia dostępne; zmiana właściciela, usunięcie aktywnego leada oraz edycja historii zabronione.';
 end;
 $owner_a$;
 

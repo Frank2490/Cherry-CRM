@@ -31,24 +31,25 @@ function CalendarLead({
   onOpen: (lead: FollowUpLead, id: string) => void;
 }) {
   const status = LEAD_STATUSES.find((entry) => entry.value === lead.status)!;
+  const nextStep = lead.next_step?.trim();
   return (
     <button
       id={id}
       type="button"
       aria-haspopup="dialog"
       aria-label={`Otwórz klienta: ${lead.company_name}, ${status.label}`}
-      title={`${lead.company_name} · ${status.label}`}
+      aria-describedby={nextStep ? `${id}-next-step` : undefined}
+      title={nextStep ? `${lead.company_name} · ${nextStep}` : lead.company_name}
       onClick={() => onOpen(lead, id)}
       className="min-h-10 w-full min-w-0 rounded-md border border-l-4 border-zinc-200 bg-white px-2 py-2 text-left text-xs font-medium leading-5 text-zinc-800 hover:bg-zinc-50 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-rose-900 [overflow-wrap:anywhere]"
       style={{ borderLeftColor: status.color }}
     >
       <span className="line-clamp-2">{lead.company_name}</span>
-      <span
-        className="mt-0.5 block text-[11px] font-normal"
-        style={{ color: status.textColor }}
-      >
-        {status.label}
-      </span>
+      {nextStep && (
+        <span id={`${id}-next-step`} className="mt-0.5 line-clamp-2 text-[11px] font-normal text-zinc-600">
+          {nextStep}
+        </span>
+      )}
     </button>
   );
 }

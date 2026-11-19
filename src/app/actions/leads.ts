@@ -354,3 +354,56 @@ export async function updateLead(
   }
   return { ok: true, lead: saved };
 }
+
+export async function deleteLead(
+  leadId: string,
+  expectedVersion: string,
+): Promise<{ ok: true; revalidated: boolean } | { ok: false; message: string }> {
+  try {
+    const claims = await getAuthenticatedClaims();
+    if (!claims)
+      return {
+        ok: false,
+        message: "Sesja wygasła. Zaloguj się ponownie przed usunięciem leada.",
+      };
+    if (!isLeadId(leadId) || !isLeadVersion(expectedVersion))
+      return { ok: false, message: "Nieprawidłowe dane leada." };
+
+    const supabase = await createClient();
+    const { data, error } = await supabase
+      .schema("public")
+      .from("leads")
+      .delete()
+      .eq("id", leadId)
+      .eq("user_id", claims.sub)
+      .eq("updated_at", expectedVersion)
+      .in("status", ["won", "lost"])
+      .select("id")
+      .maybeSingle();
+    if (error?.code === "42501")
+      return { ok: false, message: "Nie masz uprawnień do usunięcia leada." };
+    if (error) throw error;
+    if (!data)
+      return {
+        ok: false,
+        message:
+          "Lead jest niedostępny, ma aktywny status lub jego dane się zmieniły. Zamknij panel i otwórz go ponownie, aby sprawdzić aktualne dane.",
+      };
+  } catch {
+    return {
+      ok: false,
+      message:
+        "Nie udało się potwierdzić usunięcia leada. Sprawdź połączenie i spróbuj ponownie.",
+    };
+  }
+
+  let revalidated = true;
+  for (const path of ["/pipeline", "/follow-ups", "/calendar"]) {
+    try {
+      revalidatePath(path);
+    } catch {
+      revalidated = false;
+    }
+  }
+  return { ok: true, revalidated };
+}

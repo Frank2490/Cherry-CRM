@@ -35,6 +35,11 @@ export function FollowUpsList({
   const [success, setSuccess] = useState("");
   const groups = groupFollowUps(leads, today);
 
+  function open(lead: FollowUpLead, mode: OpenPanel["mode"], trigger: string) {
+    setSuccess("");
+    setOpened({ lead, mode, trigger });
+  }
+
   function close(restoreTrigger = true) {
     const trigger = restoreTrigger ? opened?.trigger : undefined;
     setOpened(null);
@@ -86,26 +91,24 @@ export function FollowUpsList({
                 const status = LEAD_STATUSES.find(
                   (entry) => entry.value === lead.status,
                 )!;
+                const detailsId = `follow-up-details-${lead.id}`;
                 return (
                   <article
                     key={lead.id}
-                    className="min-w-0 rounded-xl border border-l-4 border-zinc-200 bg-white p-4 sm:p-5"
+                    className="relative isolate min-w-0 cursor-pointer rounded-xl border border-l-4 border-zinc-200 bg-white p-4 sm:p-5"
                     style={{ borderLeftColor: status.color }}
                   >
-                    <div className="flex flex-wrap items-start justify-between gap-2">
-                      <h3 className="min-w-0 break-words text-base font-semibold text-zinc-950 [overflow-wrap:anywhere]">
-                        {lead.company_name}
-                      </h3>
-                      <span
-                        className="max-w-full rounded-md border px-2 py-1 text-xs font-medium"
-                        style={{
-                          color: status.textColor,
-                          borderColor: status.color,
-                        }}
-                      >
-                        {status.label}
-                      </span>
-                    </div>
+                    <button
+                      id={detailsId}
+                      type="button"
+                      aria-haspopup="dialog"
+                      aria-label={`${lead.company_name} — otwórz szczegóły leada, ${status.label}`}
+                      onClick={() => open(lead, "details", detailsId)}
+                      className="absolute inset-0 z-10 cursor-pointer touch-manipulation rounded-xl hover:bg-zinc-950/2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-900"
+                    />
+                    <h3 className="text-base font-semibold text-zinc-950 [overflow-wrap:anywhere]">
+                      {lead.company_name}
+                    </h3>
                     <p
                       className={`mt-3 text-sm ${group.key === "overdue" ? "font-medium text-red-800" : "text-zinc-600"}`}
                     >
@@ -134,7 +137,6 @@ export function FollowUpsList({
                         [
                           { mode: "complete", label: "Wykonano" },
                           { mode: "reschedule", label: "Przełóż" },
-                          { mode: "details", label: "Otwórz klienta" },
                         ] as const
                       ).map((action) => {
                         const id = `follow-up-${action.mode}-${lead.id}`;
@@ -145,19 +147,12 @@ export function FollowUpsList({
                             type="button"
                             aria-haspopup="dialog"
                             aria-label={`${action.label}: ${lead.company_name}`}
-                            onClick={() => {
-                              setSuccess("");
-                              setOpened({
-                                lead,
-                                mode: action.mode,
-                                trigger: id,
-                              });
-                            }}
-                            className={
+                            onClick={() => open(lead, action.mode, id)}
+                            className={`relative z-20 ${
                               action.mode === "complete"
                                 ? "min-h-11 rounded-lg bg-[#542b39] px-3 py-2 text-sm font-medium text-white hover:bg-[#43222d] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-900"
                                 : buttonClass
-                            }
+                            }`}
                           >
                             {action.label}
                           </button>

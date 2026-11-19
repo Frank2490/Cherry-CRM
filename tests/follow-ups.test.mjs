@@ -612,7 +612,7 @@ test("pusty widok ma cztery sekcje i liczniki; zamknięte okna nie tworzą warst
   assert.equal(ui.timeout, null);
   assert.equal(ui.listeners.size, 0);
 });
-test("karty mają właściwe kolory, opcjonalny następny krok, brak terminu i trzy działania", () => {
+test("karty zachowują kolor paska i następny krok, a nazwa firmy zastępuje osobny przycisk szczegółów", () => {
   const ui = uiHarness("list", {
     rows: [
       lead({ next_step: "Omówić ofertę", follow_up_date: null }),
@@ -629,27 +629,45 @@ test("karty mają właściwe kolory, opcjonalny następny krok, brak terminu i t
     "Nie zaplanowano follow-upu",
     "Zaległy",
     "border-left-color:#ea580c",
-    "color:#c2410c;border-color:#ea580c",
+    "absolute inset-0 z-10 cursor-pointer",
+    "hover:bg-zinc-950/2",
+    "focus-visible:outline-2",
     "flex-wrap",
     "min-w-0",
   ])
     assert.ok(html.includes(text));
+  assert.ok(html.includes("otwórz szczegóły leada, Wycena / oferta"));
+  assert.doesNotMatch(html, />Wycena \/ oferta<|Otwórz klienta/);
   assert.equal(html.includes("Wygrany"), false);
   ui.unmount();
 });
-test("Otwórz klienta używa istniejącego panelu, zamknięcie przywraca fokus i pozwala ponownie otworzyć", () => {
-  const ui = uiHarness("list");
-  ui.click("Otwórz klienta");
-  const panel = ui.find((n) => n.type?.name === "LeadPanel");
-  assert.equal(panel.props.leadId, leadId);
-  panel.props.onClose();
-  ui.render();
-  assert.equal(
-    ui.find((n) => n.type?.name === "LeadPanel"),
-    undefined,
-  );
-  ui.click("Otwórz klienta");
-  assert.ok(ui.find((n) => n.type?.name === "LeadPanel"));
+test("przycisk całej karty w każdej sekcji otwiera panel i odzyskuje fokus po zamknięciu", async () => {
+  const rows = [
+    lead({ id: "overdue", follow_up_date: "2026-11-17" }),
+    lead({ id: "today", follow_up_date: "2026-11-18" }),
+    lead({ id: "upcoming", follow_up_date: "2026-11-19" }),
+    lead({ id: "unscheduled", follow_up_date: null }),
+  ];
+  const ui = uiHarness("list", { rows });
+  for (const { id } of rows) {
+    const trigger = `follow-up-details-${id}`;
+    const section = ui.find((n) => n.type === "section" && n.props["aria-labelledby"] === `follow-ups-${id}`);
+    const card = nodes(section).find((n) => n.type === "article");
+    const button = card.props.children.find((n) => n?.props?.id === trigger);
+    assert.equal(button.type, "button");
+    assert.equal(button.props.type, "button");
+    assert.match(button.props.className, /absolute inset-0 z-10/);
+    assert.equal(button.props.children, undefined);
+    assert.equal(card.props.onClick, undefined);
+    button.props.onClick();
+    ui.render();
+    const panel = ui.find((n) => n.type?.name === "LeadPanel");
+    assert.equal(panel.props.leadId, id);
+    panel.props.onClose();
+    await ui.settle();
+    assert.equal(ui.find((n) => n.type?.name === "LeadPanel"), undefined);
+    assert.equal(ui.focused, trigger);
+  }
   ui.unmount();
 });
 test("po Wykonano/Przełóż okno znika, widok się odświeża i lead trafia do właściwej sekcji", () => {
@@ -659,8 +677,13 @@ test("po Wykonano/Przełóż okno znika, widok się odświeża i lead trafia do 
     ["Przełóż", "2026-11-18", "today"],
   ]) {
     const ui = uiHarness("list");
+    const button = ui.find((n) => n.type === "button" && n.props.children === label);
+    assert.match(button.props.className, /relative z-20/);
     ui.click(label);
-    ui.find((n) => n.type?.name === "FollowUpDialog").props.onSaved();
+    assert.equal(ui.find((n) => n.type?.name === "LeadPanel"), undefined);
+    const dialog = ui.find((n) => n.type?.name === "FollowUpDialog");
+    assert.equal(dialog.props.mode, label === "Wykonano" ? "complete" : "reschedule");
+    dialog.props.onSaved();
     const tree = ui.render([lead({ follow_up_date: date })]);
     assert.equal(
       ui.find((n) => n.type?.name === "FollowUpDialog"),

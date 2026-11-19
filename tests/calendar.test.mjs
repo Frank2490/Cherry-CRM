@@ -534,9 +534,32 @@ test("klienci są we właściwych dniach, z dotychczasowymi kolorami wszystkich 
       String(i),
     );
     assert.ok(html.includes(`border-left-color:${status.color}`));
-    assert.ok(html.includes(`style="color:${status.textColor}"`));
+    assert.ok(html.includes(`Otwórz klienta: Firma ${i}, ${status.label}`));
+    assert.equal(html.includes(`>${status.label}</span>`), false);
   }
   assert.equal(html.includes("Otwórz klienta: Bez terminu"), false);
+  ui.unmount();
+});
+test("widoki siatki i mobilnej agendy pokazują następny krok do dwóch linii i pomijają pusty tekst", () => {
+  const nextStep = `Omówić zakres uniwersalnego wdrożenia i potwierdzić szczegóły. ${"DługiKrok".repeat(30)}`;
+  const ui = uiHarness({ rows: [
+    lead({ id: "long", company_name: "Długi krok", next_step: `  ${nextStep}  ` }),
+    lead({ id: "empty", company_name: "Pusty krok", next_step: " \n " }),
+    lead({ id: "missing", company_name: "Brak kroku", next_step: null }),
+  ] });
+  ui.click("Pokaż pozostałe (1)");
+  for (const prefix of ["grid", "agenda"]) {
+    const event = (id) => ui.find((node) => node.props?.id === `calendar-${prefix}-2026-11-18-${id}`);
+    const html = renderToStaticMarkup(event("long"));
+    assert.match(html, /aria-describedby="[^"]+-next-step"/);
+    assert.match(html, /-next-step" class="[^"]*line-clamp-2[^"]*"/);
+    assert.ok(html.includes(`>${nextStep}</span>`));
+    assert.ok(html.includes("[overflow-wrap:anywhere]"));
+    for (const id of ["empty", "missing"]) {
+      assert.ok(event(id));
+      assert.doesNotMatch(renderToStaticMarkup(event(id)), /next-step/);
+    }
+  }
   ui.unmount();
 });
 test("dużo kontaktów ma podgląd, rozwijanie i zwijanie bez utraty wpisów", () => {

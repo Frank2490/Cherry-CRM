@@ -211,6 +211,7 @@ function actionHarness({
   claims = { sub: owner },
   response = { data: lead(), error: null },
   cacheError = false,
+  databaseLead,
 } = {}) {
   const calls = [];
   let refreshes = 0;
@@ -220,8 +221,9 @@ function actionHarness({
     "from",
     "select",
     "update",
+    "delete",
     "eq",
-    "maybeSingle",
+    "in",
   ])
     builder[method] = (...args) => {
       calls.push([method, ...args]);
@@ -230,6 +232,19 @@ function actionHarness({
   builder.overrideTypes = async () => {
     if (response instanceof Error) throw response;
     return response;
+  };
+  builder.maybeSingle = () => {
+    calls.push(["maybeSingle"]);
+    if (!calls.some(([method]) => method === "delete")) return builder;
+    if (databaseLead !== undefined) {
+      const matches = databaseLead && calls.every(([method, column, value]) => {
+        if (method === "eq") return databaseLead[column] === value;
+        if (method === "in") return value.includes(databaseLead[column]);
+        return true;
+      });
+      return Promise.resolve({ data: matches ? { id: databaseLead.id } : null, error: null });
+    }
+    return builder.overrideTypes();
   };
   const actions = loadModule("src/app/actions/leads.ts", {
     "@/lib/auth/session": { getAuthenticatedClaims: async () => claims },
@@ -404,10 +419,77 @@ test("błędy SDK i brak migracji są czytelne; potwierdzony zapis nie staje si�
   assert.equal(result.revalidated, undefined);
 });
 
+test("DELETE sprawdza właściciela, zamknięty status i wersję atomowo oraz odświeża trzy widoki", async () => {
+  for (const status of ["won", "lost"]) {
+    const action = actionHarness({ databaseLead: lead({ user_id: owner, status }) });
+    const result = await action.deleteLead(leadId, version);
+    assert.equal(result.ok, true);
+    assert.equal(result.revalidated, true);
+    assert.deepEqual(JSON.parse(JSON.stringify(action.calls)), [
+      ["schema", "public"],
+      ["from", "leads"],
+      ["delete"],
+      ["eq", "id", leadId],
+      ["eq", "user_id", owner],
+      ["eq", "updated_at", version],
+      ["in", "status", ["won", "lost"]],
+      ["select", "id"],
+      ["maybeSingle"],
+    ]);
+    assert.equal(action.refreshes, 3);
+  }
+});
+
+test("bezpośrednia akcja odrzuca każdy aktywny status, cudzy rekord i nieaktualne potwierdzenie", async () => {
+  const saved = lead({ user_id: owner, status: "won" });
+  for (const databaseLead of [
+    ...LEAD_STATUSES.filter(({ value }) => !["won", "lost"].includes(value))
+      .map(({ value }) => ({ ...saved, status: value })),
+    { ...saved, user_id: otherId },
+    { ...saved, updated_at: "2026-11-19T12:00:00.123457+00:00" },
+    null,
+  ]) {
+    const action = actionHarness({ databaseLead });
+    assert.equal((await action.deleteLead(leadId, version)).ok, false);
+    assert.equal(action.refreshes, 0);
+  }
+});
+
+test("DELETE odrzuca brak sesji lub błędne dane i nie ujawnia błędów Supabase", async () => {
+  for (const [claims, id, expectedVersion] of [
+    [null, leadId, version],
+    [{ sub: owner }, "invalid", version],
+    [{ sub: owner }, leadId, "invalid"],
+  ]) {
+    const action = actionHarness({ claims });
+    assert.equal((await action.deleteLead(id, expectedVersion)).ok, false);
+    assert.equal(action.calls.length, 0);
+  }
+
+  for (const response of [
+    new Error("private network detail"),
+    { data: null, error: { code: "42501", message: "private policy detail" } },
+  ]) {
+    const action = actionHarness({ response });
+    const result = await action.deleteLead(leadId, version);
+    assert.equal(result.ok, false);
+    assert.doesNotMatch(result.message, /private/);
+    if (!(response instanceof Error)) assert.match(result.message, /uprawnień/);
+    assert.equal(action.refreshes, 0);
+  }
+
+  const action = actionHarness({ cacheError: true });
+  const result = await action.deleteLead(leadId, version);
+  assert.equal(result.ok, true);
+  assert.equal(result.revalidated, false);
+  assert.equal(action.refreshes, 3);
+});
+
 // Kontroler z atrapami hooków i DOM: nie zastępuje testu przeglądarki ani RLS na bazie.
 function panelHarness({
   read = async () => ({ ok: true, lead: lead() }),
   write = async () => ({ ok: true, lead: lead() }),
+  remove = async () => ({ ok: true, revalidated: true }),
   preferRevalidation = false,
 } = {}) {
   const React = require("react");
@@ -505,6 +587,7 @@ function panelHarness({
       return { focus() {} };
     },
   };
+  const deleteDialog = { ...dialog };
   class TestFormData extends FormData {
     constructor(source) {
       super();
@@ -529,6 +612,7 @@ function panelHarness({
           return task;
         },
         updateLead: write,
+        deleteLead: remove,
       },
     },
     {
@@ -549,6 +633,8 @@ function panelHarness({
       },
     });
     find((node) => node.type === "dialog").props.ref.current = dialog;
+    const confirmation = find((node) => node.props?.["aria-labelledby"] === "lead-delete-title");
+    if (confirmation) confirmation.props.ref.current = deleteDialog;
     for (const node of nodes(tree))
       if (node.props?.ref && node.type !== "dialog")
         node.props.ref.current = { focus() {} };
@@ -560,6 +646,7 @@ function panelHarness({
     find,
     render,
     dialog,
+    deleteDialog,
     listeners,
     clickSurface({
       x = 100,
@@ -649,6 +736,92 @@ test("po zapisie w Kalendarzu panel unika drugiego odczytu i odświeża trasę t
     await ui.settle();
     assert.equal(ui.refreshes, revalidated ? 0 : 1);
     assert.equal(ui.closed, 0);
+    ui.unmount();
+  }
+});
+
+test("Usuń leada jest dostępne wyłącznie dla zapisanego statusu won lub lost", async () => {
+  for (const status of LEAD_STATUSES) {
+    const ui = panelHarness({ read: async () => ({ ok: true, lead: lead({ status: status.value }) }) });
+    await ui.settle();
+    const findDelete = () => ui.find((node) => node.type === "button" && node.props.children === "Usuń leada");
+    const closed = ["won", "lost"].includes(status.value);
+    assert.equal(Boolean(findDelete()), closed);
+    if (!closed) {
+      ui.change("status", "won");
+      assert.equal(findDelete(), undefined);
+    }
+    ui.unmount();
+  }
+});
+
+test("Anuluj i Escape zamykają potwierdzenie, zachowując panel i szkic", async () => {
+  let deletions = 0;
+  const ui = panelHarness({
+    read: async () => ({ ok: true, lead: lead({ status: "won" }) }),
+    remove: async () => { deletions++; return { ok: true, revalidated: true }; },
+  });
+  await ui.settle();
+  ui.change("company_name", "Niezapisany szkic");
+  ui.click("Usuń leada");
+  assert.equal(ui.deleteDialog.open, true);
+  const description = ui.find((node) => node.props?.id === "lead-delete-description");
+  assert.match(renderToStaticMarkup(description), /Nazwa z rekordu.*aktywności.*nie można cofnąć/);
+  assert.equal(ui.find((node) => node.props?.children === "Anuluj").props.autoFocus, true);
+  const confirm = ui.find((node) => node.type === "button" && node.props.children === "Usuń na stałe");
+  assert.match(renderToStaticMarkup(confirm), /style="background-color:#991b1b"/);
+  assert.equal(confirm.props.disabled, false);
+  ui.click("Anuluj");
+  assert.equal(ui.deleteDialog.open, false);
+  ui.click("Usuń leada");
+  let stopped = false;
+  ui.find((node) => node.props?.["aria-labelledby"] === "lead-delete-title").props.onCancel({
+    preventDefault() {},
+    stopPropagation() { stopped = true; },
+  });
+  assert.equal(stopped, true);
+  assert.equal(ui.deleteDialog.open, false);
+  assert.equal(ui.closed, 0);
+  assert.equal(ui.find((node) => node.type === "input" && node.props.name === "company_name").props.value, "Niezapisany szkic");
+  assert.equal(deletions, 0);
+  ui.unmount();
+});
+
+test("potwierdzenie blokuje wielokrotne kliknięcie, zachowuje panel po błędzie i zamyka go po sukcesie", async () => {
+  for (const revalidated of [true, false]) {
+    let complete;
+    const calls = [];
+    const ui = panelHarness({
+      read: async () => ({ ok: true, lead: lead({ status: "lost" }) }),
+      remove: (id, expectedVersion) => {
+        calls.push([id, expectedVersion]);
+        return new Promise((resolve) => { complete = resolve; });
+      },
+    });
+    await ui.settle();
+    ui.click("Usuń leada");
+    const confirm = ui.find((node) => node.props?.children === "Usuń na stałe").props.onClick;
+    confirm();
+    confirm();
+    ui.render();
+    assert.deepEqual(calls, [[leadId, version]]);
+    assert.equal(ui.find((node) => node.props?.children === "Usuwanie…").props.disabled, true);
+    ui.click("Anuluj");
+    assert.equal(ui.deleteDialog.open, true);
+    complete({ ok: false, message: "Nie masz uprawnień do usunięcia leada." });
+    await ui.settle();
+    assert.equal(ui.closed, 0);
+    assert.equal(ui.deleteDialog.open, true);
+    assert.match(ui.find((node) => node.props?.role === "alert").props.children, /uprawnień/);
+    assert.equal(ui.refreshes, 0);
+
+    ui.click("Usuń na stałe");
+    complete({ ok: true, revalidated });
+    await ui.settle();
+    assert.equal(calls.length, 2);
+    assert.equal(ui.closed, 1);
+    assert.equal(ui.deleteDialog.open, false);
+    assert.equal(ui.refreshes, revalidated ? 0 : 1);
     ui.unmount();
   }
 });
